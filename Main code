@@ -1,0 +1,529 @@
+package com.example.myapplication2;
+
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.location.Address;
+import android.location.Geocoder;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.telephony.CellInfo;
+import android.telephony.CellInfoLte;
+import android.telephony.CellSignalStrengthLte;
+import android.telephony.PhoneStateListener;
+import android.telephony.SignalStrength;
+import android.telephony.TelephonyCallback;
+import android.telephony.TelephonyManager;
+import android.util.Log;
+import android.widget.Button;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
+import androidx.core.app.ActivityCompat;
+
+import com.google.android.gms.maps.CameraUpdateFactory;
+import com.google.android.gms.maps.GoogleMap;
+import com.google.android.gms.maps.MapView;
+import com.google.android.gms.maps.OnMapReadyCallback;
+import com.google.android.gms.maps.model.BitmapDescriptorFactory;
+import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.maps.model.MarkerOptions;
+
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+
+public class MainActivity extends Activity implements OnMapReadyCallback {
+    private TextView mLocationTextView, mSignalStrengthTextView, frequency_text_view;
+    private final List<Integer> dbmValues = new ArrayList<>();
+    private final Executor executor = Executors.newSingleThreadExecutor();
+    private MyTelephonyCallback telephonyCallback;
+    private TelephonyManager mTelephonyManager;
+    String name = "Android Phone";
+    String geom = "";
+    String simOperatorName = "";
+    private Geocoder mGeocoder;
+    private GoogleMap googleMap;
+    int dbm, average, Ci, Pci, Tac, Rsrp, Rsrq, Rssnr, Cqi, TimingAdvance, internet,bandwidth;
+    double Earfcn, Fdl, EnodeB, distance, EIRP, formattedDistance, elevation,FSPL1,prgr;
+    private boolean isLocationPaused = false;
+    MapView mapView;
+    private Timer mTimer;
+    private TimerTask mTimerTask;
+    private String internettype = "";
+
+    private final LocationListener mLocationListener = new LocationListener() {
+        @SuppressLint("SetTextI18n")
+        @Override
+        public void onLocationChanged(Location location) {
+
+            int signalStrength = Integer.parseInt(mSignalStrengthTextView.getText().toString().split(" ")[2]);
+            int color = 0;
+            if (signalStrength >= -130) {
+                if (signalStrength < -120) {
+                    color = 20;
+                } else if (signalStrength < -110) {
+                    color = 40;
+                } else if (signalStrength < -100) {
+                    color = 60;
+                } else if (signalStrength < -90) {
+                    color = 80;
+                } else if (signalStrength < -80) {
+                    color = 120;
+                } else if (signalStrength < -70) {
+                    color = 260;
+                } else {
+                    color = 240;
+                }
+            }
+
+            //收集及時定位資訊
+            double longitude = location.getLongitude();
+            double latitude = location.getLatitude();
+            new Thread(() -> {
+                try {
+                    String apiKey = "AIzaSyDOQeSC6EOJM_6r_qZqQ80ZtM0JsPCIYKY";
+                    double latitude1 = location.getLatitude();
+                    double longitude1 = location.getLongitude();
+                    String strUrl = "https://maps.googleapis.com/maps/api/elevation/json?locations=" + latitude1 + "," + longitude1 + "&key=" + apiKey;
+                    URL url = new URL(strUrl);
+                    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                    StringBuilder json = new StringBuilder(1024);
+                    String tmp;
+                    while ((tmp = reader.readLine()) != null) {
+                        json.append(tmp).append("\n");
+                    }
+                    reader.close();
+                    JSONObject data = new JSONObject(json.toString());
+                    if (data.getJSONArray("results").length() > 0) {
+                        elevation = data.getJSONArray("results").getJSONObject(0).getDouble("elevation");
+                        // 这里的elevation就是获取到的海拔高度
+                    }
+                } catch (Exception e) {
+                    Log.e("Exception", e.getMessage());
+                }
+            }).start();
+
+            //計算dbm的平均值
+            dbmValues.add(dbm);
+            int sum = 0;
+            for (int value : dbmValues) {
+                sum += value;
+            }
+            average = sum / dbmValues.size();
+
+            //基地台定位在googlemap上顯示
+            LatLng latLng = new LatLng(latitude, longitude);
+            googleMap.addMarker(new MarkerOptions().position(latLng).title("強度:" + dbm + "dbm" + " 頻率:" + Fdl + " 距離:" + formattedDistance + "M" + " " + EIRP).icon(BitmapDescriptorFactory.defaultMarker((float) color)));
+            googleMap.moveCamera(CameraUpdateFactory.newLatLng(latLng));
+            Location baseLocation = new Location("baseLocation");
+            LatLng baseLatLng = new LatLng(25.148833, 121.777071);
+            baseLocation.setLatitude(baseLatLng.latitude);
+            baseLocation.setLongitude(baseLatLng.longitude);
+
+            //在googlemap上定位並計算與基地台的距離且修改格式讓數值不用太長
+            Location markerLocation = new Location("markerLocation");
+            markerLocation.setLatitude(latLng.latitude);
+            markerLocation.setLongitude(latLng.longitude);
+            distance =  Math.sqrt(Math.pow(markerLocation.distanceTo(baseLocation),2) +Math.pow ((33.7646484375-elevation),2));
+            DecimalFormat df = new DecimalFormat("#.#####");
+            formattedDistance = Double.parseDouble(df.format(distance));
+
+            //calculate EIRP
+
+            geom = "ST_SRID(ST_GeometryFromText('POINT(" + longitude + " " + latitude + ")'), 4326)";
+            new Thread(() -> {
+                mysql con = new mysql();
+                con.insert(name, geom,latitude,longitude,dbm,EIRP, Fdl, simOperatorName, internettype, Ci, EnodeB, Pci, Tac, Rsrp, Rsrq, Rssnr, Cqi, distance);
+            }).start();
+
+            try {
+                List<Address> addresses = mGeocoder.getFromLocation(latitude, longitude, 1);
+
+                if (addresses != null && addresses.size() > 0) {
+                    Address address = addresses.get(0);
+                    String addressLine = address.getAddressLine(0);
+                    mLocationTextView.setText("Longitude: " + longitude + "\nLatitude: " + latitude + "\nAltitude: " + elevation + " meters\nAddress: " + addressLine + "\noperator: " + simOperatorName + "\ndistance: " + distance + "M");
+                } else {
+                    mLocationTextView.setText("Longitude: " + longitude + "\nLatitude: " + latitude + "\nAltitude: " + elevation + " meters\nAddress: Not found" + "\noperator: " + simOperatorName + "\ndistance: " + distance + "M");
+                }
+            } catch (IOException e) {
+                mLocationTextView.setText("Longitude: " + longitude + "\nLatitude: " + latitude + "\nAltitude: " + elevation + " meters\nAddress: Error" + "\noperator: " + simOperatorName + "\ndistance: " + distance + "M");
+            }
+        }
+
+        @Override
+        public void onStatusChanged(String provider, int status, Bundle extras) {
+        }
+
+        @Override
+        public void onProviderEnabled(String provider) {
+        }
+
+        @Override
+        public void onProviderDisabled(String provider) {
+        }
+    };
+
+    private final PhoneStateListener mListener = new PhoneStateListener() {
+        @SuppressLint("SetTextI18n")
+        @Override
+        public void onSignalStrengthsChanged(SignalStrength signalStrength) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (signalStrength.getCellSignalStrengths(CellSignalStrengthLte.class) != null &&
+                        !signalStrength.getCellSignalStrengths(CellSignalStrengthLte.class).isEmpty()) {
+                    CellSignalStrengthLte lte = signalStrength.getCellSignalStrengths(CellSignalStrengthLte.class).get(0);
+                    dbm = lte.getDbm();
+                }
+            } else {
+                dbm = -140 + 2 * signalStrength.getGsmSignalStrength();
+            }
+
+            double wave = 300000000/(Fdl*1000000.0);
+            wave = 10*Math.log10(Math.pow(wave,2));
+            double com = Math.pow(4*3.141592653589793238462643383279502884197169399375105820974944592307816406286,2);
+            com = 10*Math.log10(com);
+            double distance1 = 10*Math.log10(Math.pow(distance,2));
+            EIRP = dbm-3-wave+com+distance1;
+            double KTB = 10*Math.log10(1.38*Math.pow(10,-23)*300*bandwidth*1000);
+            double Receive_noise = KTB+3;
+            double SNR = dbm-Receive_noise;
+            double capacity = bandwidth * 1000 * (Math.log(1 + SNR) / Math.log(2));
+
+            mSignalStrengthTextView.setText("Signal Strength: " + dbm + " dBm"+"\nEIRP: " + EIRP+" dBm"+"\nthroughput: "+ capacity +"\nSNR:"+SNR+ " dB" );
+        }
+    };
+
+    @SuppressLint("SetTextI18n")
+    private void updateCellInfo() {
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
+            return;
+        }
+
+
+        List<CellInfo> cellInfoList = mTelephonyManager.getAllCellInfo();
+        if (cellInfoList != null && !cellInfoList.isEmpty()) {
+            CellInfo ci = cellInfoList.get(0);
+//            for (CellInfo ci : cellInfoList) {
+            if (ci instanceof CellInfoLte) {
+                CellInfoLte cellInfoLte = (CellInfoLte) ci;
+                Earfcn = cellInfoLte.getCellIdentity().getEarfcn();
+                if (0 < Earfcn && Earfcn < 599) {
+                    Fdl = 2110 + 0.1 * (Earfcn - 0);
+                } else if (1200 < Earfcn && Earfcn < 1949) {
+                    Fdl = 1805 + 0.1 * (Earfcn - 1200);
+                } else if (2750 < Earfcn && Earfcn < 3449) {
+                    Fdl = 2620 + 0.1 * (Earfcn - 2750);
+                } else if (3450 < Earfcn && Earfcn < 3799) {
+                    Fdl = 925 + 0.1 * (Earfcn - 3450);
+                } else if (9210 < Earfcn && Earfcn < 9659) {
+                    Fdl = 758 + 0.1 * (Earfcn - 9210);
+                }
+                Ci = cellInfoLte.getCellIdentity().getCi();
+                Pci = cellInfoLte.getCellIdentity().getPci();
+                EnodeB = Ci / 256.0;
+                Tac = cellInfoLte.getCellIdentity().getTac();
+                Rsrp = cellInfoLte.getCellSignalStrength().getRsrp();
+                int bandwidth = cellInfoLte.getCellIdentity().getBandwidth();
+                Rsrq = cellInfoLte.getCellSignalStrength().getRsrq();
+                Rssnr = cellInfoLte.getCellSignalStrength().getRssnr();
+                Cqi = cellInfoLte.getCellSignalStrength().getCqi();
+                TimingAdvance = cellInfoLte.getCellSignalStrength().getTimingAdvance();
+                frequency_text_view.setText("Frequency: " + Fdl + "Mhz" + "\nCi: " + Ci + "   EnodeB: " + EnodeB + "\nPci: " + Pci + "\nTac: " + Tac + "\nRsrp:" + Rsrp + " Rssnr:" + Rssnr +" band:" + bandwidth+ " 網路類型" + internettype );
+            }
+        }
+    }
+
+    private void startTimer() {
+        mTimer = new Timer();
+        mTimerTask = new TimerTask() {
+            @Override
+            public void run() {
+                runOnUiThread(() -> updateCellInfo());
+            }
+        };
+        mTimer.schedule(mTimerTask, 0, 10000); // 每隔 10 秒更新一次 RSRP 值
+    }
+
+    private void stopTimer() {
+        if (mTimer != null) {
+            mTimer.cancel();
+            mTimer = null;
+        }
+        if (mTimerTask != null) {
+            mTimerTask.cancel();
+            mTimerTask = null;
+        }
+    }
+
+
+    private static final int MY_PERMISSION_REQUEST_ACCESS_FINE_LOCATION = 1;
+
+    @SuppressLint("SetTextI18n")
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+        mapView = findViewById(R.id.mapView);
+        mapView.onCreate(savedInstanceState);
+        mapView.getMapAsync(this);
+        mLocationTextView = findViewById(R.id.location_text_view);
+        mSignalStrengthTextView = findViewById(R.id.signal_strength_text_view);
+        frequency_text_view = findViewById(R.id.frequency_text_view);
+        mGeocoder = new Geocoder(this, Locale.getDefault());
+        mTelephonyManager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+        mTelephonyManager.listen(mListener, PhoneStateListener.LISTEN_SIGNAL_STRENGTHS);
+        simOperatorName = mTelephonyManager.getNetworkOperatorName();
+        checkAndRequestPermissions();
+        Button save = findViewById(R.id.button);
+        Button stop = findViewById(R.id.button1);
+        Button change = findViewById(R.id.button2);
+        new Thread(() -> {
+            mysql con = new mysql();
+            con.run();
+        }).start();
+
+        save.setOnClickListener(view -> {
+            if (isLocationPaused) {
+                isLocationPaused = false;
+                LocationManager locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+                if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                    return;
+                }
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 10000, 0, mLocationListener);
+            }
+        });
+        stop.setOnClickListener(view -> {
+            isLocationPaused = true;
+            LocationManager locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+            locationManager.removeUpdates(mLocationListener);
+            mLocationTextView.setText("暫停定位和上傳資料...." + "\n平均信號強度" + average + "dbm" + "");
+        });
+        change.setOnClickListener(view -> {
+            Intent intent = new Intent(MainActivity.this, SecondActivity.class);
+            startActivity(intent);
+        });
+    }
+
+    private void checkAndRequestPermissions() {
+        List<String> permissionsNeeded = new ArrayList<>();
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            permissionsNeeded.add(android.Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            permissionsNeeded.add(Manifest.permission.READ_PHONE_STATE);
+        }
+
+        if (!permissionsNeeded.isEmpty()) {
+            ActivityCompat.requestPermissions(this, permissionsNeeded.toArray(new String[0]), MY_PERMISSION_REQUEST_ACCESS_FINE_LOCATION);
+        } else {
+            getLocationAndCellInfo();
+            registerSignalStrengthListener();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == MY_PERMISSION_REQUEST_ACCESS_FINE_LOCATION) {
+            Map<String, Integer> perms = new HashMap<>();
+            perms.put(android.Manifest.permission.ACCESS_FINE_LOCATION, PackageManager.PERMISSION_GRANTED);
+            perms.put(Manifest.permission.READ_PHONE_STATE, PackageManager.PERMISSION_GRANTED);
+
+            for (int i = 0; i < permissions.length; i++) {
+                perms.put(permissions[i], grantResults[i]);
+            }
+
+            if (perms.get(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED && perms.get(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                getLocationAndCellInfo();
+                registerSignalStrengthListener();
+            } else {
+                Toast.makeText(this, "Some permissions are denied", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    @SuppressLint("SetTextI18n")
+    private void getLocationAndCellInfo() {
+        LocationManager locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
+            return;
+        }
+        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 10000, 0, mLocationListener);
+        CellInfo ci = mTelephonyManager.getAllCellInfo().get(0);
+        if (ci instanceof CellInfoLte) {
+            CellInfoLte cellInfoLte = (CellInfoLte) ci;
+
+            Earfcn = cellInfoLte.getCellIdentity().getEarfcn();
+            if (0 < Earfcn && Earfcn < 599) {
+                Fdl = 2110 + 0.1 * (Earfcn - 0);
+            } else if (1200 < Earfcn && Earfcn < 1949) {
+                Fdl = 1805 + 0.1 * (Earfcn - 1200);
+            } else if (2750 < Earfcn && Earfcn < 3449) {
+                Fdl = 2620 + 0.1 * (Earfcn - 2750);
+            } else if (3450 < Earfcn && Earfcn < 3799) {
+                Fdl = 925 + 0.1 * (Earfcn - 3450);
+            } else if (9210 < Earfcn && Earfcn < 9659) {
+                Fdl = 758 + 0.1 * (Earfcn - 9210);
+            }
+            Ci = cellInfoLte.getCellIdentity().getCi();
+            Pci = cellInfoLte.getCellIdentity().getPci();
+            EnodeB = Ci / 256;
+            Tac = cellInfoLte.getCellIdentity().getTac();
+            bandwidth = cellInfoLte.getCellIdentity().getBandwidth();
+            Rsrp = cellInfoLte.getCellSignalStrength().getRsrp();
+            Rsrq = cellInfoLte.getCellSignalStrength().getRsrq();
+            Rssnr = cellInfoLte.getCellSignalStrength().getRssnr();
+            Cqi = cellInfoLte.getCellSignalStrength().getCqi();
+            TimingAdvance = cellInfoLte.getCellSignalStrength().getTimingAdvance();
+            frequency_text_view.setText("EARFCN: " + Fdl + "Mhz" + "\n Ci: " + Ci + "   EnodeB: " + EnodeB + "\nPci: " + Pci + "\nTac: " + Tac + "\nRsrp:" + Rsrp + " Rssnr: " + Rssnr + " band: " + bandwidth +" 網路類型代碼: " + internettype);
+
+            internet = mTelephonyManager.getDataNetworkType();
+            if (internet == 13) {
+                internettype = "LTE";
+            }
+        }
+    }
+
+    private void registerSignalStrengthListener() {
+        if (mTelephonyManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Android 12 及以上版本使用的方式
+                telephonyCallback = new MyTelephonyCallback();
+                mTelephonyManager.registerTelephonyCallback(executor, telephonyCallback);
+            } else {
+                // Android 11 及以下版本使用的方式
+                mTelephonyManager.listen(mListener, PhoneStateListener.LISTEN_SIGNAL_STRENGTHS);
+            }
+        }
+    }
+
+    @Override
+    public void onMapReady(@NonNull GoogleMap googleMap) {
+        this.googleMap = googleMap;
+        LocationManager locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
+            return;
+        }
+        Location location = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+        if (location != null) {
+            LatLng latLng = new LatLng(location.getLatitude(), location.getLongitude());
+            googleMap.addMarker(new MarkerOptions().position(latLng).title("當前位置"));
+            googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(latLng, 18.0f));
+            googleMap.moveCamera(CameraUpdateFactory.newLatLng(latLng));
+
+        }
+        LatLng baseLatLng = new LatLng(25.148825, 121.777658);
+        googleMap.addMarker(new MarkerOptions().position(baseLatLng).title("基地台"));
+
+    }
+
+    protected void onResume() {
+        super.onResume();
+        mapView.onResume();
+        startTimer();
+
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        mapView.onPause();
+        stopTimer();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        mapView.onDestroy();
+        if (mTelephonyManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                mTelephonyManager.unregisterTelephonyCallback(telephonyCallback);
+            } else {
+                mTelephonyManager.listen(mListener, PhoneStateListener.LISTEN_NONE);
+            }
+        }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        mapView.onLowMemory();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        mapView.onSaveInstanceState(outState);
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    private class MyTelephonyCallback extends TelephonyCallback implements TelephonyCallback.SignalStrengthsListener {
+        @SuppressLint("SetTextI18n")
+        @Override
+        public void onSignalStrengthsChanged(@NonNull SignalStrength signalStrength) {
+            List<CellSignalStrengthLte> lteSignalStrengths = signalStrength.getCellSignalStrengths(CellSignalStrengthLte.class);
+            for (CellSignalStrengthLte lte : lteSignalStrengths) {
+                final int signalStrengthText = lte.getDbm();
+                dbm = signalStrengthText;
+                double wave = 300000000/(Fdl*1000000.0);
+                wave = 10*Math.log10(Math.pow(wave,2));
+                double com = Math.pow(4*3.141592653589793238462643383279502884197169399375105820974944592307816406286,2);
+                com = 10*Math.log10(com);
+                double distance1 = 10*Math.log10(Math.pow(distance,2));
+                EIRP = dbm-3-wave+com+distance1;
+                double KTB = 10*Math.log10(1.38*Math.pow(10,-23)*300*bandwidth*1000);
+                double Receive_noise = KTB+3;
+                double SNR = signalStrengthText-Receive_noise;
+                double capacity = bandwidth * 1000 * (Math.log(1 + SNR) / Math.log(2));
+                runOnUiThread(() -> mSignalStrengthTextView.setText("Signal Strength: " + signalStrengthText + " dBm"+"\nEIRP: " + EIRP+" dBm"+"\nthroughput: "+capacity+"\nSNR:"+SNR+ " dB" ));
+            }
+        }
+    }
+}
